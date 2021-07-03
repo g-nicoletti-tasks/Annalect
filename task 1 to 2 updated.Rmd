@@ -1,0 +1,187 @@
+---
+title: "Annalect Task 1-3"
+author: "EMEA Data Science"
+date: "01/04/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Intro
+
+Thanks for taking time to do this task! It should take less than 2 hours (please don't spend more!). Generally, what we are testing for is whether you are right fit technically (you use of R) as well as your analytical intuition as a data scientist. 
+
+## Task 1: building an ad stock function (max 40 minutes)
+
+Take a look at the following open source code for ad stock:
+https://github.com/AnalyticsArtist/BlogFiles/blob/master/Advertising%20Adstock%20Transformation.R
+
+It's a snippet of code that takes a series of data points , and then transforms them based on ad stock. We will take this forward with what is called max memory transformation (number of periods backwards from period T that the ad stock transformation is applied to. E.g. , memory of 5, means that only last 5 periods are used in ad stock calculation).
+
+First task is to create and run a function that takes a series of inputs including a data frame of daily impressions, and runs the ad stock decay over max memory  transformation on weekly aggregated series of this data. 
+
+inputs:
+- data: data frame (daily data)
+- channel: name of channel to filter
+- metric: name of metric to filter
+- adstock_rate: chosen parameter for calculation
+- max_memory (in number weeks): chosen parameter for the max memory
+
+output (return values):
+- original series (daily)
+- transformed series (weekly)
+- name of channel
+- name of metric
+- decay rate (not ad stock rate)
+- max memory 
+
+Template for function:
+
+```{r cars}
+
+# calling some useful packages
+library(tidyverse, quietly = TRUE)
+library(lubridate, quietly = TRUE)
+
+adstock_build=function(data=NA, channel=NA, metric=NA, adstock_rate=NULL, max_memory=NULL) {
+  
+  original_series <- # create an object containing the original series
+    data %>%
+    dplyr::filter(channel == {{channel}}) %>% # filter only relevant channel
+    dplyr::select(matches("Date") | matches({{metric}})) # select only relevant metric
+  
+  input <- # this object will be the input for the ad stock transformation 
+    original_series %>%
+    dplyr::mutate(week_start = lubridate::floor_date(as.Date(Date,"%d/%m/%Y"), "week", week_start = 1)) %>% # transform days into week starting on mondays
+    dplyr::select(-Date) %>% # delete original Date variable
+    dplyr::relocate(week_start) %>% # pull week_start to the front of the data frame
+    dplyr::group_by(week_start) %>% 
+    dplyr::summarise(metric = sum(c_across(where(is.numeric)))) # sum impressions by week
+    
+  
+  input_vec <- pull(input, metric) # extract metric as numeric vector
+  
+  input_new <- data.frame(matrix(ncol = {{max_memory}}+1, nrow = length(input_vec))) # create df for storing new results
+  
+  # ad stock calculation (using ad stock rate and max memory)
+  for(i in 0:{{max_memory}}) {
+    input_new[,i+1] <- lag(input_vec, n=i, default = 0) * ({{adstock_rate}}^(i))
+  }
+
+  input_new$row_tot <- rowSums(input_new) # result of ad stock transformation
+  
+  output <- cbind.data.frame(input$week_start, input_new$row_tot) # combining dates and ad stock output
+  
+  colnames(output) <- c("week_start", "adstocked") # rename output variables
+  
+  #create list of outputs
+  lt <- list(original_series = original_series
+             , transformed_series = output
+             , channel_name = {{channel}}
+             , metric_name = {{metric}}
+             , ad_stock = {{adstock_rate}}
+             , max_memory = {{max_memory}}
+            )
+
+  return(lt) #original series, transformed series, name of channel, name of metric, ad stock and max memory
+}
+
+```
+
+Once you have built the function, test it with the below parameters: 
+
+```{r}
+data=read.csv('task test 1.csv',stringsAsFactors = FALSE)
+head(data)
+adstock_build(data,'Display','Impressions',0.1,4) #For Display channel, transform (on weekly) all Display impressions with ad stock rate of 0.4 and max memory of 4
+
+# note: conflicting code and comment - 0.1 vs 0.4!
+```
+
+
+
+## Task 2: finding optimal adstock (max 10 minutes)
+
+Take a look at the below data - this is now the orders data for the same client, showing hte online orders for the period of time.
+
+```{r}
+data_2=read.csv('task 2.csv',stringsAsFactors = FALSE)
+head(data_2)
+
+```
+
+Task 2: Correlating ad stock of variable with sales (max 30 minutes)
+
+Let's say that we want to run a script that estimates the fit between a transformation of a media variable and the number of orders recorded.
+
+```{r}
+#input
+display_adstocked=adstock_build(data,'Display','Impressions',0.1,4)
+data_2
+
+#merge the data sets
+data_2_week <- 
+  data_2 %>%
+  dplyr::mutate(week_start = lubridate::floor_date(as.Date(date,"%Y-%m-%d"), "week", week_start = 1)) %>% # transform days into weeks starting on monday
+  dplyr::select(-date) %>% # delete original date field
+  dplyr::relocate(week_start) %>% # pull week_start to the front of the data frame
+  dplyr::group_by(week_start) %>% 
+  dplyr::summarise(orders = sum(c_across(where(is.numeric)))) # orders grouped by week
+
+one_df <- # join data
+  left_join(display_adstocked[["transformed_series"]], data_2_week, by = "week_start") %>%
+  na.omit() # excluding rows containing NULL values (data_2_week starts after the ad stocked media)
+
+#split data in to subsets
+0.8*dim(one_df)[1] # number of rows into train
+dim(one_df)[1] - (0.8*dim(one_df)[1]) # number of rows into test
+
+train.data  <- one_df[1:52, ] # first 52 rows are assigned to training the model
+test.data <- one_df[-c(1:52), ] # remaining rows are saved separately for testing the model output
+
+
+#model fit
+library(caret, quietly = TRUE)
+model <- 
+  lm(orders~.
+     , data = train.data) # simple linear model: orders = b0 + b1*adstocked_data
+summary(model)
+
+# Make predictions and compute the R2, RMSE and MAE
+predictions <- 
+  model %>% predict(test.data) # using adstocked_data in test_data to predict orders 
+
+# comparing predictions of the model with observed orders in test.data
+data.frame( R2 = R2(predictions, test.data$orders),
+            RMSE = RMSE(predictions, test.data$orders),
+            MAE = MAE(predictions, test.data$orders))
+
+#
+#
+
+#output
+#a correlation or coefficent that indicates relationship between display_adstocked and number of orders
+#a best fit metric, between display_adstocked and orders
+
+```
+
+Please fill out the above, and please note down the answer to the following questions (no code required):
+
+- how do you choose your best fit metric, which did you consider and why did you go with your choice?
+Answer: R2 (and Adjusted R2) are often used for explanatory purposes. The advantage of having training and testing datasets is that we can easily understand how well the model predicts new observations not included into the train dataset.
+Because in the task asks for a measure of relationship between display_adstocked and number of orders, then the R2 would be my choice, BUT need to be careful because R2 in training and testing are extremely different! Maybe better to double-check this before taking the final decision!
+
+- how would you pick the best transformation(best input in your adstock function) for a single variable?
+Answer: recursively try different parameters to the ad stock function (example: ad stock rate = 0.1, 0.2, 0.3, etc. and 
+Max memory = 1,2,3, etc.) and stick with the one that shows the best fit.
+
+- how would you pick the best transformation for multiple variables at same time, like PPC, Social, or SEO? 
+Answer: same as above, but try different combinations of variables at the same time (example: PPC with ad stock rate of 0.2 and max memory of 7 weeks + Social with ad stock rate of 0.1 and max memory of 2 weeks + etc) and see what combination of transformations provides the best fit.
+
+- What if you were asked to pick best transformaion for 10+ variables at same time? 
+Answer: I would probably consider building a function that can read and combine many variables and transformations at the same time (maybe using purrr::map() function) - warning: this function may be long to build and potentially very slow to run.
+
+- take a read of this (https://www.r-bloggers.com/2012/08/genetic-algorithms-a-simple-r-example/). Would a GA be a good idea for previous question?
+Answer: I don't have experience with GA, but probably it would be a good idea because it will prevent from calculating all the possible combinations of variables and parameters (this will have an impact on the calculation time). Also, a very good advantage of GA is that the simulations will generate better solutions from generation to generation. On the other hand, the total randomness of the process does not guarantee that the best solution will always be found (but it's quite likey that a solution "good enough" will be found).
