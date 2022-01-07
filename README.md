@@ -1,2 +1,2 @@
-# prj-int-Annalect
+# Annalect
 An analysis for Annalect
